@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const entrySchema = new mongoose.Schema({
     book: { type: mongoose.Schema.Types.ObjectId, ref: 'Book', required: true },
+    txid: { type: String, unique: true, sparse: true }, // Optional for old entries, uniquely tracks new entries
     amount: { type: Number, required: true },
     type: { type: String, enum: ['IN', 'OUT'], required: true }, // IN = Income, OUT = Expense
     date: { type: Date, default: Date.now },

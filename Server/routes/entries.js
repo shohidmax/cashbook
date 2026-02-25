@@ -8,6 +8,7 @@ const ActivityLog = require('../models/ActivityLog');
 const Trash = require('../models/Trash');
 const Notification = require('../models/Notification');
 const verifyToken = require('../middleware/auth');
+const crypto = require('crypto');
 
 const multer = require('multer');
 const path = require('path');
@@ -119,8 +120,20 @@ router.post('/', async (req, res) => {
             return res.status(403).json({ message: 'Not authorized to add entries' });
         }
 
+        // Generate a 14-digit numeric transaction ID
+        const generateTxId = () => {
+            const min = 10000000000000n; // 14 digits min
+            const max = 99999999999999n; // 14 digits max
+            // Generate 8 random bytes, convert to integer, scale it modulo the range, and add min
+            const randomBuffer = crypto.randomBytes(8);
+            const randomInt = BigInt(`0x${randomBuffer.toString('hex')}`);
+            const txidBigInt = (randomInt % (max - min + 1n)) + min;
+            return txidBigInt.toString();
+        };
+
         const entry = new Entry({
             book: req.body.book,
+            txid: generateTxId(),
             amount: req.body.amount,
             type: req.body.type,
             category: req.body.category,
