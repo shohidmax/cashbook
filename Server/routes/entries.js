@@ -9,11 +9,43 @@ const Trash = require('../models/Trash');
 const Notification = require('../models/Notification');
 const verifyToken = require('../middleware/auth');
 
+const multer = require('multer');
+const path = require('path');
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, path.join(__dirname, '../public/uploads/'));
+    },
+    filename: function (req, file, cb) {
+        cb(null, Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname));
+    }
+});
+const upload = multer({ storage: storage });
+
+// Upload a receipt image (Must be BEFORE verifyToken if we use a different token approach, or at least before /:id)
+router.post('/upload', verifyToken, upload.single('receipt'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ message: 'No file uploaded' });
+        }
+        // Build the URL depending on how the server is hosted. For now, we'll return the relative path.
+        // It's better to return a full URL if possible, but the client can prefix it if needed.
+        const receiptUrl = `/uploads/${req.file.filename}`;
+        res.json({ receiptUrl });
+    } catch (err) {
+        console.error("Error uploading receipt:", err);
+        res.status(500).json({ message: 'Upload failed' });
+    }
+});
+
+// Apply verifyToken middleware to all routes below this line
 router.use(verifyToken);
 
 // Helper to send notifications to business members
 const notifyMembers = async (business, senderId, message, bookId = null) => {
     try {
+        // ... (existing notifyMembers logic)
         const ownerId = business.owner._id ? business.owner._id.toString() : business.owner.toString();
         const memberIds = business.members.map(m => m.user._id ? m.user._id.toString() : m.user.toString());
 
@@ -95,6 +127,7 @@ router.post('/', async (req, res) => {
             remark: req.body.remark,
             mode: req.body.mode,
             date: req.body.date,
+            receiptUrl: req.body.receiptUrl,
             createdBy: user._id
         });
 

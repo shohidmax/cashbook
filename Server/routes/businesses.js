@@ -166,6 +166,105 @@ router.post('/:id/members', async (req, res) => {
     }
 });
 
+// Remove Member or Leave Business
+router.delete('/:id/members/:memberId', async (req, res) => {
+    try {
+        const business = await Business.findById(req.params.id);
+        if (!business) return res.status(404).json({ message: 'Business not found' });
+
+        const requester = await User.findOne({ firebaseUid: req.user.uid });
+        if (!requester) return res.status(401).json({ message: 'Requester not found' });
+        const requesterId = requester._id.toString();
+
+        const memberIdToRemove = req.params.memberId;
+
+        // Check if requester is Owner or Admin
+        const isOwner = (business.owner._id ? business.owner._id.toString() : business.owner.toString()) === requesterId;
+        const isAdmin = checkBusinessPermission(business, requesterId, ['admin']);
+
+        // Members can remove themselves (leave)
+        const isSelf = requesterId === memberIdToRemove;
+
+        if (!isOwner && !isAdmin && !isSelf) {
+            return res.status(403).json({ message: 'Not authorized to remove members' });
+        }
+
+        // Prevent removing the owner
+        const ownerIdStr = business.owner._id ? business.owner._id.toString() : business.owner.toString();
+        if (ownerIdStr === memberIdToRemove) {
+            return res.status(400).json({ message: 'Cannot remove the owner. The owner must transfer ownership or delete the business.' });
+        }
+
+        const initialLength = business.members.length;
+        business.members = business.members.filter(m => {
+            const mUserId = m.user._id ? m.user._id.toString() : m.user.toString();
+            return mUserId !== memberIdToRemove.toString();
+        });
+
+        if (business.members.length === initialLength) {
+            return res.status(404).json({ message: 'Member not found in business' });
+        }
+
+        await business.save();
+        await logActivity(business._id, requester._id, 'REMOVED_MEMBER', `Removed member with ID ${memberIdToRemove}`);
+
+        res.json({ message: 'Member removed successfully' });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// Update Member Role
+router.put('/:id/members/:memberId', async (req, res) => {
+    try {
+        const { role } = req.body;
+        if (!role) return res.status(400).json({ message: 'Role is required' });
+
+        const business = await Business.findById(req.params.id);
+        if (!business) return res.status(404).json({ message: 'Business not found' });
+
+        const requester = await User.findOne({ firebaseUid: req.user.uid });
+        if (!requester) return res.status(401).json({ message: 'Requester not found' });
+        const requesterId = requester._id.toString();
+
+        const memberIdToUpdate = req.params.memberId;
+
+        // Check if requester is Owner or Admin
+        const isOwner = (business.owner._id ? business.owner._id.toString() : business.owner.toString()) === requesterId;
+        const isAdmin = checkBusinessPermission(business, requesterId, ['admin']);
+
+        if (!isOwner && !isAdmin) {
+            return res.status(403).json({ message: 'Not authorized to update member roles' });
+        }
+
+        // Prevent changing owner's role
+        const ownerIdStr = business.owner._id ? business.owner._id.toString() : business.owner.toString();
+        if (ownerIdStr === memberIdToUpdate) {
+            return res.status(400).json({ message: 'Cannot update the owner\'s role.' });
+        }
+
+        // Find the member to update
+        const memberIndex = business.members.findIndex(m => {
+            const mUserId = m.user._id ? m.user._id.toString() : m.user.toString();
+            return mUserId === memberIdToUpdate;
+        });
+
+        if (memberIndex === -1) {
+            return res.status(404).json({ message: 'Member not found in business' });
+        }
+
+        const oldRole = business.members[memberIndex].role;
+        business.members[memberIndex].role = role;
+
+        await business.save();
+        await logActivity(business._id, requester._id, 'UPDATED_MEMBER_ROLE', `Updated member role from ${oldRole} to ${role}`);
+
+        res.json({ message: 'Member role updated successfully', members: business.members });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
 // Member voluntarily leaves the business
 router.delete('/:id/leave', async (req, res) => {
     try {

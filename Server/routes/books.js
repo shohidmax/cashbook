@@ -107,6 +107,24 @@ router.get('/:id', async (req, res) => {
             query.type = req.query.type;
         }
 
+        // Filter by category
+        if (req.query.category) {
+            query.category = req.query.category;
+        }
+
+        // Filter by date range
+        if (req.query.startDate || req.query.endDate) {
+            query.date = {};
+            if (req.query.startDate) {
+                query.date.$gte = new Date(req.query.startDate);
+            }
+            if (req.query.endDate) {
+                const end = new Date(req.query.endDate);
+                end.setHours(23, 59, 59, 999);
+                query.date.$lte = end;
+            }
+        }
+
         // ... previous stats logic
         const Entry = require('../models/Entry');
         // Get total count for pagination stats

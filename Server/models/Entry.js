@@ -8,6 +8,7 @@ const entrySchema = new mongoose.Schema({
     remark: { type: String },
     category: { type: String, required: true },
     mode: { type: String, required: true, default: 'Cash' },
+    receiptUrl: { type: String, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     created_at: { type: Date, default: Date.now },
