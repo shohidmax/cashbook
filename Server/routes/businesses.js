@@ -74,7 +74,20 @@ router.get('/:id', async (req, res) => {
             return res.status(403).json({ message: 'Not authorized to view this business' });
         }
 
-        const books = await Book.find({ business: req.params.id }).sort({ created_at: -1 });
+        const allBooks = await Book.find({ business: req.params.id }).sort({ created_at: -1 });
+
+        // Filter books based on permissions (Business Admin/Owner gets all, else check book members)
+        const isBizAdminOrOwner = checkBusinessPermission(business, userId, ['admin']);
+        let books = allBooks;
+
+        if (!isBizAdminOrOwner) {
+            books = allBooks.filter(book => {
+                return book.members && book.members.some(m => {
+                    const mUserId = m.user._id ? m.user._id.toString() : m.user.toString();
+                    return mUserId === userId;
+                });
+            });
+        }
 
         res.json({
             ...business.toObject(),
@@ -195,21 +208,28 @@ router.delete('/:id/members/:memberId', async (req, res) => {
             return res.status(400).json({ message: 'Cannot remove the owner. The owner must transfer ownership or delete the business.' });
         }
 
-        const initialLength = business.members.length;
-        business.members = business.members.filter(m => {
+        const memberIndex = business.members.findIndex(m => {
             const mUserId = m.user._id ? m.user._id.toString() : m.user.toString();
-            return mUserId !== memberIdToRemove.toString();
+            return mUserId === memberIdToRemove.toString();
         });
 
-        if (business.members.length === initialLength) {
+        console.log("Removing member:", memberIdToRemove, "Index found:", memberIndex);
+
+        if (memberIndex === -1) {
             return res.status(404).json({ message: 'Member not found in business' });
         }
 
+        const subdocId = business.members[memberIndex]._id;
+        business.members.pull({ _id: subdocId });
+        business.markModified('members');
+
         await business.save();
+        console.log("Member removed and saved successfully!");
         await logActivity(business._id, requester._id, 'REMOVED_MEMBER', `Removed member with ID ${memberIdToRemove}`);
 
         res.json({ message: 'Member removed successfully' });
     } catch (err) {
+        console.error("Error in delete member:", err);
         res.status(500).json({ message: err.message });
     }
 });

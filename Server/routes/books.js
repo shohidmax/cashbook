@@ -37,6 +37,32 @@ const checkBusinessPermission = (business, userId, allowedRoles = []) => {
     return allowedRoles.includes(member.role);
 };
 
+// Helper to check book-level permissions
+const checkBookPermission = (business, book, userId, allowedRoles = []) => {
+    // Business Owner and Business Admin always have full access to all books
+    const ownerId = business.owner._id ? business.owner._id.toString() : business.owner.toString();
+    if (ownerId === userId) return true;
+
+    const bizMember = business.members.find(m => {
+        const mUserId = m.user._id ? m.user._id.toString() : m.user.toString();
+        return mUserId === userId;
+    });
+
+    if (bizMember && bizMember.role === 'admin') {
+        return true;
+    }
+
+    // Checking Book-level members
+    const bookMember = book.members.find(m => {
+        const mUserId = m.user._id ? m.user._id.toString() : m.user.toString();
+        return mUserId === userId;
+    });
+
+    if (!bookMember) return false;
+    if (allowedRoles.length === 0) return true;
+    return allowedRoles.includes(bookMember.role);
+};
+
 // Create a book inside a business
 router.post('/', async (req, res) => {
     try {
@@ -75,14 +101,16 @@ router.get('/:id', async (req, res) => {
         if (!user) return res.status(401).json({ message: 'User not found' });
 
         const book = await Book.findById(req.params.id)
-            .populate('createdBy', 'name email');
+            .populate('createdBy', 'name email')
+            .populate('members.user', 'firebaseUid name email');
 
         if (!book) return res.status(404).json({ message: 'Book not found' });
 
         const business = await Business.findById(book.business)
             .populate('owner', 'firebaseUid name email')
             .populate('members.user', 'firebaseUid name email');
-        if (!checkBusinessPermission(business, user._id.toString())) {
+
+        if (!checkBookPermission(business, book, user._id.toString())) {
             return res.status(403).json({ message: 'Not authorized to view this book' });
         }
 
@@ -165,7 +193,7 @@ router.get('/:id/report', async (req, res) => {
         if (!book) return res.status(404).json({ message: 'Book not found' });
 
         const business = await Business.findById(book.business);
-        if (!checkBusinessPermission(business, user._id.toString())) {
+        if (!checkBookPermission(business, book, user._id.toString())) {
             return res.status(403).json({ message: 'Not authorized to view this book' });
         }
 
@@ -205,6 +233,105 @@ router.get('/:id/report', async (req, res) => {
     }
 });
 
+// Add Member to Book
+router.post('/:id/members', async (req, res) => {
+    const { email, role } = req.body;
+    try {
+        const book = await Book.findById(req.params.id);
+        if (!book) return res.status(404).json({ message: 'Book not found' });
+
+        const business = await Business.findById(book.business);
+        if (!business) return res.status(404).json({ message: 'Business not found' });
+
+        const requester = await User.findOne({ firebaseUid: req.user.uid });
+        if (!requester) return res.status(401).json({ message: 'Requester not found' });
+        const requesterId = requester._id.toString();
+
+        // Only Business Admins/Owners or Book Admins can add members to a book
+        const isBizAdminOrOwner = checkBusinessPermission(business, requesterId, ['admin']);
+        const isBookAdmin = checkBookPermission(business, book, requesterId, ['admin']);
+
+        if (!isBizAdminOrOwner && !isBookAdmin) {
+            return res.status(403).json({ message: 'Not authorized to add members to this book' });
+        }
+
+        const userToAdd = await User.findOne({ email });
+        if (!userToAdd) return res.status(404).json({ message: 'User not found with that email' });
+
+        const userToAddIdStr = userToAdd._id.toString();
+
+        // Prevent adding if they are already in the book
+        if (book.members.some(m => {
+            const mUserId = m.user._id ? m.user._id.toString() : m.user.toString();
+            return mUserId === userToAddIdStr;
+        })) {
+            return res.status(400).json({ message: 'User is already a member of this book' });
+        }
+
+        book.members.push({ user: userToAdd._id, role });
+        await book.save();
+
+        await logActivity(business._id, requester._id, 'ADDED_BOOK_MEMBER', `Added ${email} to ${book.name} as ${role}`, book._id);
+
+        const updatedBook = await Book.findById(req.params.id)
+            .populate('createdBy', 'name email')
+            .populate('members.user', 'name email photoURL firebaseUid');
+
+        res.json(updatedBook);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// Remove Member from Book
+router.delete('/:id/members/:memberId', async (req, res) => {
+    try {
+        const book = await Book.findById(req.params.id);
+        if (!book) return res.status(404).json({ message: 'Book not found' });
+
+        const business = await Business.findById(book.business);
+        if (!business) return res.status(404).json({ message: 'Business not found' });
+
+        const requester = await User.findOne({ firebaseUid: req.user.uid });
+        if (!requester) return res.status(401).json({ message: 'Requester not found' });
+        const requesterId = requester._id.toString();
+
+        const memberIdToRemove = req.params.memberId;
+
+        const isBizAdminOrOwner = checkBusinessPermission(business, requesterId, ['admin']);
+        const isBookAdmin = checkBookPermission(business, book, requesterId, ['admin']);
+        const isSelf = requesterId === memberIdToRemove;
+
+        if (!isBizAdminOrOwner && !isBookAdmin && !isSelf) {
+            return res.status(403).json({ message: 'Not authorized to remove members from this book' });
+        }
+
+        const memberIndex = book.members.findIndex(m => {
+            const mUserId = m.user._id ? m.user._id.toString() : m.user.toString();
+            return mUserId === memberIdToRemove.toString();
+        });
+
+        console.log("Removing book member:", memberIdToRemove, "Index found:", memberIndex);
+
+        if (memberIndex === -1) {
+            return res.status(404).json({ message: 'Member not found in book' });
+        }
+
+        const subdocId = book.members[memberIndex]._id;
+        book.members.pull({ _id: subdocId });
+        book.markModified('members');
+
+        await book.save();
+        console.log("Book member removed and saved successfully!");
+        await logActivity(business._id, requester._id, 'REMOVED_BOOK_MEMBER', `Removed member from ${book.name}`, book._id);
+
+        res.json({ message: 'Member removed from book successfully' });
+    } catch (err) {
+        console.error("Error in delete book member:", err);
+        res.status(500).json({ message: err.message });
+    }
+});
+
 // Update a book
 router.put('/:id', async (req, res) => {
     try {
@@ -221,7 +348,10 @@ router.put('/:id', async (req, res) => {
         const business = await Business.findById(book.business);
         if (!business) return res.status(404).json({ message: 'Business not found' });
 
-        if (!checkBusinessPermission(business, userId, ['admin'])) {
+        const isBizAdminOrOwner = checkBusinessPermission(business, userId, ['admin']);
+        const isBookAdmin = checkBookPermission(business, book, userId, ['admin']);
+
+        if (!isBizAdminOrOwner && !isBookAdmin) {
             return res.status(403).json({ message: 'Not authorized to rename this book' });
         }
 
@@ -247,7 +377,11 @@ router.delete('/:id', async (req, res) => {
         if (!book) return res.status(404).json({ message: 'Book not found' });
 
         const business = await Business.findById(book.business);
-        if (!checkBusinessPermission(business, userId, ['admin'])) {
+
+        const isBizAdminOrOwner = checkBusinessPermission(business, userId, ['admin']);
+        const isBookAdmin = checkBookPermission(business, book, userId, ['admin']);
+
+        if (!isBizAdminOrOwner && !isBookAdmin) {
             return res.status(403).json({ message: 'Not authorized to delete this book' });
         }
 

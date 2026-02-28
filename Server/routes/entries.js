@@ -101,6 +101,32 @@ const checkBusinessPermission = (business, userId, allowedRoles = []) => {
     return allowedRoles.includes(member.role);
 };
 
+// Helper to check book-level permissions
+const checkBookPermission = (business, book, userId, allowedRoles = []) => {
+    // Business Owner and Business Admin always have full access to all books
+    const ownerId = business.owner._id ? business.owner._id.toString() : business.owner.toString();
+    if (ownerId === userId) return true;
+
+    const bizMember = business.members.find(m => {
+        const mUserId = m.user._id ? m.user._id.toString() : m.user.toString();
+        return mUserId === userId;
+    });
+
+    if (bizMember && bizMember.role === 'admin') {
+        return true;
+    }
+
+    // Checking Book-level members
+    const bookMember = book.members.find(m => {
+        const mUserId = m.user._id ? m.user._id.toString() : m.user.toString();
+        return mUserId === userId;
+    });
+
+    if (!bookMember) return false;
+    if (allowedRoles.length === 0) return true;
+    return allowedRoles.includes(bookMember.role);
+};
+
 // Create an entry
 router.post('/', async (req, res) => {
     try {
@@ -116,8 +142,12 @@ router.post('/', async (req, res) => {
 
         const requesterId = user._id.toString();
 
-        if (!checkBusinessPermission(business, requesterId, ['admin', 'editor', 'member'])) {
-            return res.status(403).json({ message: 'Not authorized to add entries' });
+        const isBizAdminOrOwner = checkBusinessPermission(business, requesterId, ['admin']);
+        const isBizMember = checkBusinessPermission(business, requesterId, ['editor', 'member']);
+        const hasBookAccess = checkBookPermission(business, book, requesterId, ['admin', 'editor', 'member']);
+
+        if (!isBizAdminOrOwner && (!isBizMember || !hasBookAccess)) {
+            return res.status(403).json({ message: 'Not authorized to add entries to this book' });
         }
 
         // Generate a 14-digit numeric transaction ID
@@ -186,9 +216,10 @@ router.delete('/:id', async (req, res) => {
             business = await Business.findById(book.business);
 
             const isCreator = entry.createdBy && entry.createdBy.toString() === requesterId;
-            const isAdmin = business && checkBusinessPermission(business, requesterId, ['admin']);
+            const isBizAdmin = business && checkBusinessPermission(business, requesterId, ['admin']);
+            const isBookAdmin = checkBookPermission(business, book, requesterId, ['admin']);
 
-            if (!isCreator && !isAdmin) {
+            if (!isCreator && !isBizAdmin && !isBookAdmin) {
                 return res.status(403).json({ message: 'Only the creator or an admin can delete this entry' });
             }
 
@@ -202,15 +233,17 @@ router.delete('/:id', async (req, res) => {
         }
 
         await logActivity(
-            business._id,
+            business ? business._id : null,
             user._id,
             'DELETED_ENTRY',
-            `Deleted ${entry.type === 'IN' ? 'Income' : 'Expense'} of ${entry.amount} from ${book.name}`,
-            book._id,
+            `Deleted ${entry.type === 'IN' ? 'Income' : 'Expense'} of ${entry.amount} from ${book ? book.name : 'Unknown Book'}`,
+            book ? book._id : null,
             entry._id
         );
 
-        await notifyMembers(business, user._id, `Deleted a ${entry.type === 'IN' ? 'Income' : 'Expense'} of ৳${entry.amount} in ${book.name}`, book._id);
+        if (business) {
+            await notifyMembers(business, user._id, `Deleted a ${entry.type === 'IN' ? 'Income' : 'Expense'} of ৳${entry.amount} in ${book.name}`, book._id);
+        }
 
         // Move to Trash
         await Trash.create({
@@ -243,10 +276,12 @@ router.put('/:id', async (req, res) => {
             business = await Business.findById(book.business);
 
             const isCreator = entry.createdBy && entry.createdBy.toString() === requesterId;
-            const isAdmin = business && checkBusinessPermission(business, requesterId, ['admin']);
+            const isBizAdminOrOwner = checkBusinessPermission(business, requesterId, ['admin']);
+            const isBizMember = checkBusinessPermission(business, requesterId, ['editor', 'member']);
+            const hasBookAccess = checkBookPermission(business, book, requesterId, ['admin', 'editor', 'member']);
 
-            if (!isCreator && !isAdmin) {
-                return res.status(403).json({ message: 'Only the creator or an admin can update this entry' });
+            if (!isCreator && !isBizAdminOrOwner && (!isBizMember || !hasBookAccess)) {
+                return res.status(403).json({ message: 'Only the creator or someone with access to this book can update this entry' });
             }
         }
 
@@ -283,11 +318,11 @@ router.put('/:id', async (req, res) => {
         }
 
         await logActivity(
-            business._id,
+            business ? business._id : null,
             user._id,
             'UPDATED_ENTRY',
-            `Updated entry from ${oldAmount} to ${updatedEntry.amount} in ${book.name}`,
-            book._id,
+            `Updated entry from ${oldAmount} to ${updatedEntry.amount} in ${book ? book.name : 'Unknown Book'}`,
+            book ? book._id : null,
             updatedEntry._id
         );
 
