@@ -27,12 +27,14 @@ const entriesRouter = require('./routes/entries');
 const usersRouter = require('./routes/users');
 const businessesRouter = require('./routes/businesses'); // NEW
 const notificationsRouter = require('./routes/notifications'); // NEW
+const trashRouter = require('./routes/trash'); // NEW
 
 app.use('/api/books', booksRouter);
 app.use('/api/entries', entriesRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/businesses', businessesRouter); // NEW
 app.use('/api/notifications', notificationsRouter); // NEW
+app.use('/api/trash', trashRouter); // NEW
 
 // Start Server
 app.listen(PORT, () => {
