@@ -324,6 +324,58 @@ router.delete('/:id/leave', async (req, res) => {
     }
 });
 
+// Transfer Business Ownership
+router.post('/:id/transfer-ownership', async (req, res) => {
+    try {
+        const { newOwnerEmail } = req.body;
+        if (!newOwnerEmail) {
+            return res.status(400).json({ message: 'New owner email is required' });
+        }
+
+        const requester = await User.findOne({ firebaseUid: req.user.uid });
+        if (!requester) return res.status(401).json({ message: 'Requester not found' });
+        const requesterId = requester._id.toString();
+
+        const business = await Business.findById(req.params.id);
+        if (!business) return res.status(404).json({ message: 'Business not found' });
+
+        // Only the actual Owner can transfer ownership
+        const ownerId = business.owner._id ? business.owner._id.toString() : business.owner.toString();
+        if (ownerId !== requesterId) {
+            return res.status(403).json({ message: 'Only the current owner can transfer ownership' });
+        }
+
+        const newOwner = await User.findOne({ email: newOwnerEmail });
+        if (!newOwner) {
+            return res.status(404).json({ message: 'User not found with that email' });
+        }
+
+        const newOwnerIdStr = newOwner._id.toString();
+        if (newOwnerIdStr === requesterId) {
+            return res.status(400).json({ message: 'You are already the owner of this business' });
+        }
+
+        // If new owner is already a member, remove them from the members array
+        business.members = business.members.filter(m => {
+            const mUserId = m.user._id ? m.user._id.toString() : m.user.toString();
+            return mUserId !== newOwnerIdStr;
+        });
+
+        // Add old owner to members array as an admin
+        business.members.push({ user: requester._id, role: 'admin' });
+
+        // Transfer ownership
+        business.owner = newOwner._id;
+
+        await business.save();
+        await logActivity(business._id, requester._id, 'TRANSFERRED_OWNERSHIP', `Transferred ownership to ${newOwner.email}`);
+
+        res.json({ message: 'Ownership transferred successfully' });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
 // Update a business
 router.put('/:id', async (req, res) => {
     try {
@@ -448,7 +500,7 @@ router.post('/:id/categories', async (req, res) => {
         const requester = await User.findOne({ firebaseUid: req.user.uid });
         if (!requester) return res.status(401).json({ message: 'Requester not found' });
 
-        if (!checkBusinessPermission(business, requester._id.toString(), ['admin', 'editor'])) {
+        if (!checkBusinessPermission(business, requester._id.toString(), ['admin', 'editor', 'member'])) {
             return res.status(403).json({ message: 'Not authorized to add categories' });
         }
 
@@ -507,7 +559,7 @@ router.post('/:id/payment-modes', async (req, res) => {
         const requester = await User.findOne({ firebaseUid: req.user.uid });
         if (!requester) return res.status(401).json({ message: 'Requester not found' });
 
-        if (!checkBusinessPermission(business, requester._id.toString(), ['admin', 'editor', 'member'])) {
+        if (!checkBusinessPermission(business, requester._id.toString(), ['admin', 'editor'])) {
             return res.status(403).json({ message: 'Not authorized to add payment modes' });
         }
 
@@ -533,7 +585,7 @@ router.delete('/:id/payment-modes/:mode', async (req, res) => {
         const requester = await User.findOne({ firebaseUid: req.user.uid });
         if (!requester) return res.status(401).json({ message: 'Requester not found' });
 
-        if (!checkBusinessPermission(business, requester._id.toString(), ['admin', 'editor', 'member'])) {
+        if (!checkBusinessPermission(business, requester._id.toString(), ['admin', 'editor'])) {
             return res.status(403).json({ message: 'Not authorized to delete payment modes' });
         }
 
